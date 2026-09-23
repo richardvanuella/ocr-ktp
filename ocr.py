@@ -298,21 +298,40 @@ for label, isi in baris_normal:
         data_ktp[label] += " " + isi
 
 
-# =========================================================
-# 9. CARI NIK KALAU LABEL NIK TIDAK TERBACA
-# =========================================================
+# ============================================================
+# 9. NIK
+# ============================================================
 
-if data_ktp["NIK"] == "":
+# Cari semua kandidat angka panjang dari OCR seluruh gambar
+kandidat_nik = re.findall(r"\d{16,}", teks_ocr)
 
-    # Cari angka 16 digit di seluruh hasil OCR
-    match_nik = re.search(
-        r"\b\d{16}\b",
-        teks_ocr
-    )
+print("\n========== KANDIDAT NIK ==========")
+print(kandidat_nik)
 
-    if match_nik:
-        data_ktp["NIK"] = match_nik.group()
+nik_angka = ""
 
+if kandidat_nik:
+
+    # Ambil kandidat yang diawali kode wilayah 31 / 32
+    kandidat_valid = [
+        x for x in kandidat_nik
+        if x.startswith(("31", "32")) and len(x) >= 16
+    ]
+
+    if kandidat_valid:
+
+        # Ambil 16 digit pertama
+        nik_angka = kandidat_valid[0][:16]
+
+    else:
+
+        nik_angka = kandidat_nik[0][:16]
+
+
+# Simpan
+data_ktp["NIK"] = nik_angka
+
+print("NIK HASIL:", data_ktp["NIK"])
 
 # =========================================================
 # 10. BERSIHKAN NIK
