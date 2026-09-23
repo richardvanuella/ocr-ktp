@@ -18,10 +18,13 @@ pytesseract.pytesseract.tesseract_cmd = (
 # 2. BACA GAMBAR
 # =========================================================
 
-gambar_asli = cv2.imread("contoh.jpg")
+gambar_asli = cv2.imread("ktp4.jpg")
+gambar_asli = cv2.resize(gambar_asli, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+tinggi, lebar = gambar_asli.shape[:2]
+gambar_asli = gambar_asli[:, 0:int(lebar * 0.68)]
 
 if gambar_asli is None:
-    print("ERROR: Gambar 'contoh.jpg' tidak ditemukan!")
+    print("ERROR: Gambar 'ktp3.jpg' tidak ditemukan!")
     exit()
 
 
@@ -42,9 +45,9 @@ gambar_gray = cv2.cvtColor(
 
 nilai_threshold, gambar_biner = cv2.threshold(
     gambar_gray,
-    127,
+    0,
     255,
-    cv2.THRESH_BINARY
+    cv2.THRESH_BINARY + cv2.THRESH_OTSU
 )
 
 
@@ -80,6 +83,7 @@ def bersihkan_teks(teks):
     teks = teks.replace("—", ":")
     teks = teks.replace("–", ":")
     teks = teks.replace("»", ":")
+    teks = teks.replace("~", "-")
     teks = teks.replace(">", ":")
     teks = teks.replace("‘", "")
     teks = teks.replace("’", "")
@@ -102,6 +106,8 @@ def bersihkan_teks(teks):
 
 
 baris_ocr = bersihkan_teks(teks_ocr)
+for i, l in enumerate(baris_ocr):
+    print(i, repr(l))
 
 
 # =========================================================
@@ -132,11 +138,13 @@ def normalisasi_label(baris):
             r"^Tempat.*Lahir\b",
             r"^Tempat/Tgl Lahir\b",
             r"^Tempat/Tanggal Lahir\b"
+            r"^Temp.{0,6}Lahir\b"
         ],
 
         "Jenis Kelamin": [
             r"^Janis\s*Kolamin\b",
-            r"^Jenis\s*Kelamin\b"
+            r"^Jenis\s*Kelamin\b",
+            r"^Jen.{0,3}\s*Kelamin\b"
         ],
 
         "Alamat": [
@@ -154,7 +162,8 @@ def normalisasi_label(baris):
             r"^KoliBosa\b",
             r"^Kel.*Desa\b",
             r"^Kelurahan\b",
-            r"^Desa\b"
+            r"^Desa\b",
+            r"^Ke.{0,4}Desa\b"
         ],
 
         "Kecamatan": [
@@ -209,9 +218,16 @@ def normalisasi_label(baris):
                     # Ambil teks setelah label
                     isi = line[match.end():].strip()
 
-                    # Bersihkan tanda pemisah
+                     # Bersihkan tanda pemisah (termasuk varian OCR: =, ;)
                     isi = re.sub(
-                        r"^[\s:.\-]+",
+                        r"^[\s:.\-=;]+",
+                        "",
+                        isi
+                    )
+
+                    # Tangani "s" tunggal sebagai typo dari ":"
+                    isi = re.sub(
+                        r"^[sS]\s+(?=[A-Z0-9])",
                         "",
                         isi
                     )
@@ -311,9 +327,19 @@ if data_ktp["NIK"]:
         data_ktp["NIK"]
     )
 
-    # NIK Indonesia seharusnya 16 digit
     if len(nik) == 16:
         data_ktp["NIK"] = nik
+
+    elif len(nik) > 16:
+        # Kemungkinan ada digit nyasar ikut ke-capture,
+        # ambil 16 digit pertama
+        data_ktp["NIK"] = nik[:16]
+
+    elif len(nik) < 16:
+        # Coba cari ulang 16 digit murni di seluruh hasil OCR
+        match_nik = re.search(r"\b\d{16}\b", teks_ocr)
+        if match_nik:
+            data_ktp["NIK"] = match_nik.group()
 
 
 # =========================================================
@@ -354,6 +380,18 @@ for key in data_ktp:
         "",
         data_ktp[key]
     )
+        # Field yang seharusnya murni teks, tidak pernah diawali angka
+    field_teks_murni = [
+        "Nama", "Jenis Kelamin", "Agama",
+        "Status Perkawinan", "Pekerjaan", "Kewarganegaraan"
+    ]
+
+    if key in field_teks_murni:
+        data_ktp[key] = re.sub(
+            r"^\d+\s*",
+            "",
+            data_ktp[key]
+        )
 
 # =========================================================
 # 12. PISAHKAN GOLONGAN DARAH DARI JENIS KELAMIN
