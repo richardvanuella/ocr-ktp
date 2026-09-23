@@ -2,21 +2,32 @@ import cv2
 import numpy as np
 import pytesseract
 import re
+import sqlite3
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # =========================================================
-# 1. BACA GAMBAR
+# 1. KONFIGURASI TESSERACT
+# =========================================================
+
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+)
+
+
+# =========================================================
+# 2. BACA GAMBAR
 # =========================================================
 
 gambar_asli = cv2.imread("contoh.jpg")
 
 if gambar_asli is None:
-    print("Gambar tidak ditemukan!")
+    print("ERROR: Gambar 'contoh.jpg' tidak ditemukan!")
     exit()
 
+
+
 # =========================================================
-# 2. GRAYSCALE
+# 3. GRAYSCALE
 # =========================================================
 
 gambar_gray = cv2.cvtColor(
@@ -24,8 +35,9 @@ gambar_gray = cv2.cvtColor(
     cv2.COLOR_BGR2GRAY
 )
 
+
 # =========================================================
-# 3. THRESHOLDING
+# 4. THRESHOLDING
 # =========================================================
 
 nilai_threshold, gambar_biner = cv2.threshold(
@@ -35,81 +47,197 @@ nilai_threshold, gambar_biner = cv2.threshold(
     cv2.THRESH_BINARY
 )
 
-# =========================================================
-# 4. THINNING / SKELETONIZATION
-# =========================================================
-
-# Balik gambar
-gambar_inv = cv2.bitwise_not(gambar_biner)
-
-# Matriks kosong
-skeleton = np.zeros(
-    gambar_inv.shape,
-    dtype=np.uint8
-)
-
-# Kernel
-kernel = cv2.getStructuringElement(
-    cv2.MORPH_CROSS,
-    (3, 3)
-)
-
-temp_img = gambar_inv.copy()
-
-while cv2.countNonZero(temp_img) > 0:
-
-    # Erosi
-    eroded = cv2.erode(
-        temp_img,
-        kernel
-    )
-
-    # Dilasi
-    temp = cv2.dilate(
-        eroded,
-        kernel
-    )
-
-    # Ambil bagian yang hilang
-    temp = cv2.subtract(
-        temp_img,
-        temp
-    )
-
-    # Gabungkan ke skeleton
-    skeleton = cv2.bitwise_or(
-        skeleton,
-        temp
-    )
-
-    # Iterasi berikutnya
-    temp_img = eroded.copy()
-
-# Balik kembali
-gambar_thinned = cv2.bitwise_not(skeleton)
-
 
 # =========================================================
 # 5. OCR
 # =========================================================
+# IMPORTANT:
+# OCR menggunakan gambar_biner, BUKAN thinning.
 
-# OCR menggunakan hasil thresholding
-# Untuk awal kita gunakan thresholding,
-# karena thinning belum tentu lebih bagus untuk OCR.
-
-teks = pytesseract.image_to_string(
+teks_ocr = pytesseract.image_to_string(
     gambar_biner,
     config="--psm 6"
 )
 
-print("\n==============================")
-print("HASIL OCR")
-print("==============================")
-print(teks)
+print("\n========================================")
+print("HASIL OCR MENTAH")
+print("========================================")
+print(teks_ocr)
 
 
 # =========================================================
-# 6. EKSTRAKSI DATA KTP
+# 6. BERSIHKAN HASIL OCR
+# =========================================================
+
+def bersihkan_teks(teks):
+    """
+    Membersihkan hasil OCR tanpa mengubah
+    isi data secara berlebihan.
+    """
+
+    # Hilangkan karakter yang tidak diperlukan
+    teks = teks.replace("|", " ")
+    teks = teks.replace("—", ":")
+    teks = teks.replace("–", ":")
+    teks = teks.replace("»", ":")
+    teks = teks.replace(">", ":")
+    teks = teks.replace("‘", "")
+    teks = teks.replace("’", "")
+    teks = teks.replace("“", "")
+    teks = teks.replace("”", "")
+
+    # Hilangkan spasi berlebihan
+    teks = re.sub(r'[ \t]+', ' ', teks)
+
+    # Hilangkan baris kosong
+    baris = []
+
+    for line in teks.splitlines():
+        line = line.strip()
+
+        if line:
+            baris.append(line)
+
+    return baris
+
+
+baris_ocr = bersihkan_teks(teks_ocr)
+
+
+# =========================================================
+# 7. NORMALISASI LABEL KTP
+# =========================================================
+
+def normalisasi_label(baris):
+    """
+    Mengubah typo OCR pada LABEL menjadi
+    label KTP yang benar.
+    """
+
+    # Daftar label dan kemungkinan typo OCR
+    pola_label = {
+        "NIK": [
+            r"^MIK\b",
+            r"^NIK\b",
+            r"^NIK\s*[:.]"
+        ],
+
+        "Nama": [
+            r"^fama\b",
+            r"^Nama\b"
+        ],
+
+        "Tempat/Tanggal Lahir": [
+            r"^Tempautg\)?\s*Lahir\b",
+            r"^Tempat.*Lahir\b",
+            r"^Tempat/Tgl Lahir\b",
+            r"^Tempat/Tanggal Lahir\b"
+        ],
+
+        "Jenis Kelamin": [
+            r"^Janis\s*Kolamin\b",
+            r"^Jenis\s*Kelamin\b"
+        ],
+
+        "Alamat": [
+            r"^Afamat\b",
+            r"^Alamat\b"
+        ],
+
+        "RT/RW": [
+            r"^RTIRYE\b",
+            r"^RT/RW\b",
+            r"^RT.*RW\b"
+        ],
+
+        "Kel/Desa": [
+            r"^KoliBosa\b",
+            r"^Kel.*Desa\b",
+            r"^Kelurahan\b",
+            r"^Desa\b"
+        ],
+
+        "Kecamatan": [
+            r"^Kecamaian\b",
+            r"^Kecamatan\b"
+        ],
+
+        "Agama": [
+            r"^Agama\b"
+        ],
+
+        "Status Perkawinan": [
+            r"^Stains\s*Porkawinan\b",
+            r"^Status\s*Perkawinan\b"
+        ],
+
+        "Pekerjaan": [
+            r"^Poksrjaan\b",
+            r"^Pekerjaan\b"
+        ],
+
+        "Kewarganegaraan": [
+            r"^Kewarganegaraan\b"
+        ],
+
+        "Berlaku Hingga": [
+            r"^Berlaky\s*Hingga\b",
+            r"^Berlaku\s*Hingga\b"
+        ]
+    }
+
+    hasil = []
+
+    for line in baris:
+
+        label_ditemukan = None
+        isi = line
+
+        for label, pola_list in pola_label.items():
+
+            for pola in pola_list:
+
+                match = re.search(
+                    pola,
+                    line,
+                    re.IGNORECASE
+                )
+
+                if match:
+                    label_ditemukan = label
+
+                    # Ambil teks setelah label
+                    isi = line[match.end():].strip()
+
+                    # Bersihkan tanda pemisah
+                    isi = re.sub(
+                        r"^[\s:.\-]+",
+                        "",
+                        isi
+                    )
+
+                    break
+
+            if label_ditemukan:
+                break
+
+        if label_ditemukan:
+            hasil.append(
+                (label_ditemukan, isi)
+            )
+        else:
+            hasil.append(
+                (None, line)
+            )
+
+    return hasil
+
+
+baris_normal = normalisasi_label(baris_ocr)
+
+
+# =========================================================
+# 8. EKSTRAKSI DATA
 # =========================================================
 
 data_ktp = {
@@ -117,6 +245,7 @@ data_ktp = {
     "Nama": "",
     "Tempat/Tanggal Lahir": "",
     "Jenis Kelamin": "",
+    "Golongan Darah": "",
     "Alamat": "",
     "RT/RW": "",
     "Kel/Desa": "",
@@ -124,192 +253,217 @@ data_ktp = {
     "Agama": "",
     "Status Perkawinan": "",
     "Pekerjaan": "",
-    "Kewarganegaraan": ""
+    "Kewarganegaraan": "",
+    "Berlaku Hingga": ""
 }
 
 
 # ---------------------------------------------------------
-# NIK
+# Masukkan hasil berdasarkan label
 # ---------------------------------------------------------
 
-match = re.search(
-    r'NIK\s*[:.]?\s*(\d{16})',
-    teks,
-    re.IGNORECASE
-)
+for label, isi in baris_normal:
 
-if match:
-    data_ktp["NIK"] = match.group(1)
+    if label is None:
+        continue
 
+    isi = isi.strip()
 
-# ---------------------------------------------------------
-# NAMA
-# ---------------------------------------------------------
+    if not isi:
+        continue
 
-match = re.search(
-    r'Nama\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
+    # Kalau field belum memiliki data
+    if data_ktp[label] == "":
+        data_ktp[label] = isi
 
-if match:
-    data_ktp["Nama"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# TEMPAT / TANGGAL LAHIR
-# ---------------------------------------------------------
-
-match = re.search(
-    r'(?:Tempat/Tgl Lahir|Tempat/Tanggal Lahir|Tempat.*Lahir)\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Tempat/Tanggal Lahir"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# JENIS KELAMIN
-# ---------------------------------------------------------
-
-match = re.search(
-    r'Jenis Kelamin\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Jenis Kelamin"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# ALAMAT
-# ---------------------------------------------------------
-
-match = re.search(
-    r'Alamat\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Alamat"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# RT/RW
-# ---------------------------------------------------------
-
-match = re.search(
-    r'RT/RW\s*[:.]?\s*(\d{1,3}\s*/\s*\d{1,3})',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["RT/RW"] = match.group(1)
-
-
-# ---------------------------------------------------------
-# KELURAHAN / DESA
-# ---------------------------------------------------------
-
-match = re.search(
-    r'(?:Kel/Desa|Kelurahan|Desa)\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Kel/Desa"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# KECAMATAN
-# ---------------------------------------------------------
-
-match = re.search(
-    r'Kecamatan\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Kecamatan"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# AGAMA
-# ---------------------------------------------------------
-
-match = re.search(
-    r'Agama\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Agama"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# STATUS PERKAWINAN
-# ---------------------------------------------------------
-
-match = re.search(
-    r'Status Perkawinan\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Status Perkawinan"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# PEKERJAAN
-# ---------------------------------------------------------
-
-match = re.search(
-    r'Pekerjaan\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Pekerjaan"] = match.group(1).strip()
-
-
-# ---------------------------------------------------------
-# KEWARGANEGARAAN
-# ---------------------------------------------------------
-
-match = re.search(
-    r'(?:Kewarganegaraan|Kewarganegaraan)\s*[:.]?\s*(.+)',
-    teks,
-    re.IGNORECASE
-)
-
-if match:
-    data_ktp["Kewarganegaraan"] = match.group(1).strip()
+    # Kalau ternyata OCR memecah field menjadi
+    # beberapa baris, gabungkan
+    else:
+        data_ktp[label] += " " + isi
 
 
 # =========================================================
-# 7. TAMPILKAN HASIL
+# 9. CARI NIK KALAU LABEL NIK TIDAK TERBACA
 # =========================================================
 
-print("\n==============================")
-print("DATA KTP")
-print("==============================")
+if data_ktp["NIK"] == "":
+
+    # Cari angka 16 digit di seluruh hasil OCR
+    match_nik = re.search(
+        r"\b\d{16}\b",
+        teks_ocr
+    )
+
+    if match_nik:
+        data_ktp["NIK"] = match_nik.group()
+
+
+# =========================================================
+# 10. BERSIHKAN NIK
+# =========================================================
+
+if data_ktp["NIK"]:
+
+    # Ambil hanya angka
+    nik = re.sub(
+        r"\D",
+        "",
+        data_ktp["NIK"]
+    )
+
+    # NIK Indonesia seharusnya 16 digit
+    if len(nik) == 16:
+        data_ktp["NIK"] = nik
+
+
+# =========================================================
+# 11. EKSTRAKSI GOLONGAN DARAH
+# =========================================================
+
+if data_ktp["Golongan Darah"] == "":
+
+    match_darah = re.search(
+        r"(?:Darah|Gol\s*[,.:]?\s*Darah)\s*[:.]?\s*(AB|A|B|O)\b",
+        teks_ocr,
+        re.IGNORECASE
+    )
+
+    if match_darah:
+        data_ktp["Golongan Darah"] = (
+            match_darah.group(1).upper()
+        )
+
+
+# =========================================================
+# 12. BERSIHKAN BEBERAPA FIELD
+# =========================================================
+
+for key in data_ktp:
+
+    data_ktp[key] = data_ktp[key].strip()
+
+    # Hilangkan karakter aneh di awal/akhir
+    data_ktp[key] = re.sub(
+        r"^[^A-Za-z0-9]+",
+        "",
+        data_ktp[key]
+    )
+
+    data_ktp[key] = re.sub(
+        r"[^A-Za-z0-9/.,\- ]+$",
+        "",
+        data_ktp[key]
+    )
+
+# =========================================================
+# 12. PISAHKAN GOLONGAN DARAH DARI JENIS KELAMIN
+# =========================================================
+
+if data_ktp["Jenis Kelamin"]:
+
+    # Hapus bagian "Gol, Darah : AB" dari Jenis Kelamin
+    data_ktp["Jenis Kelamin"] = re.sub(
+        r"\s*Gol\s*[,.:]?\s*Darah\s*[:.]?\s*(AB|A|B|O)\b",
+        "",
+        data_ktp["Jenis Kelamin"],
+        flags=re.IGNORECASE
+    ).strip()
+
+# =========================================================
+# 13. TAMPILKAN HASIL AKHIR
+# =========================================================
+
+print("\n========================================")
+print("DATA KTP HASIL EKSTRAKSI")
+print("========================================")
 
 for key, value in data_ktp.items():
+
+    if value == "":
+        value = "Tidak terbaca"
+
     print(f"{key:<25}: {value}")
 
+# =========================================================
+# 14. SIMPAN DATA KE SQLITE
+# =========================================================
+
+# Membuka / membuat database
+koneksi = sqlite3.connect("ktp.db")
+
+cursor = koneksi.cursor()
+
+
+# Membuat tabel jika belum ada
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS data_ktp (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nik TEXT,
+    nama TEXT,
+    tempat_tanggal_lahir TEXT,
+    jenis_kelamin TEXT,
+    golongan_darah TEXT,
+    alamat TEXT,
+    rt_rw TEXT,
+    kel_desa TEXT,
+    kecamatan TEXT,
+    agama TEXT,
+    status_perkawinan TEXT,
+    pekerjaan TEXT,
+    kewarganegaraan TEXT,
+    berlaku_hingga TEXT
+)
+""")
+
+
+# Memasukkan data hasil OCR
+cursor.execute("""
+INSERT INTO data_ktp (
+    nik,
+    nama,
+    tempat_tanggal_lahir,
+    jenis_kelamin,
+    golongan_darah,
+    alamat,
+    rt_rw,
+    kel_desa,
+    kecamatan,
+    agama,
+    status_perkawinan,
+    pekerjaan,
+    kewarganegaraan,
+    berlaku_hingga
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+""", (
+    data_ktp["NIK"],
+    data_ktp["Nama"],
+    data_ktp["Tempat/Tanggal Lahir"],
+    data_ktp["Jenis Kelamin"],
+    data_ktp["Golongan Darah"],
+    data_ktp["Alamat"],
+    data_ktp["RT/RW"],
+    data_ktp["Kel/Desa"],
+    data_ktp["Kecamatan"],
+    data_ktp["Agama"],
+    data_ktp["Status Perkawinan"],
+    data_ktp["Pekerjaan"],
+    data_ktp["Kewarganegaraan"],
+    data_ktp["Berlaku Hingga"]
+))
+
+
+# Simpan perubahan
+koneksi.commit()
+
+print("\nData berhasil disimpan ke database SQLite!")
+
+
+# Tutup koneksi
+koneksi.close()
 
 # =========================================================
-# 8. TAMPILKAN GAMBAR
+# 14. TAMPILKAN GAMBAR
 # =========================================================
 
 cv2.imshow(
@@ -320,11 +474,6 @@ cv2.imshow(
 cv2.imshow(
     "2. Thresholding",
     gambar_biner
-)
-
-cv2.imshow(
-    "3. Thinning",
-    gambar_thinned
 )
 
 cv2.waitKey(0)
